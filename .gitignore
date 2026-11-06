@@ -1,0 +1,10 @@
+.venv/
+.tmp/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+data/runtime_state.json
+data/uploads/
+data/Ultralytics/
+outputs/vision/
+*.pt

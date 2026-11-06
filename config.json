@@ -1,0 +1,14 @@
+{
+  "settings": {
+    "map_width": 100,
+    "map_height": 100,
+    "battery_reserve": 12.0,
+    "energy_per_unit": 0.08,
+    "max_events": 500
+  },
+  "drones": [
+    {"drone_id": "DR-01", "x": 10.0, "y": 15.0, "battery": 96.0, "speed": 7.5, "home_x": 10.0, "home_y": 15.0},
+    {"drone_id": "DR-02", "x": 48.0, "y": 12.0, "battery": 84.0, "speed": 8.5, "home_x": 48.0, "home_y": 12.0},
+    {"drone_id": "DR-03", "x": 82.0, "y": 22.0, "battery": 73.0, "speed": 9.0, "home_x": 82.0, "home_y": 22.0}
+  ]
+}
