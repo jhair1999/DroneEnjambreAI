@@ -22,6 +22,8 @@ class DashboardContractTests(unittest.TestCase):
             "Activar YOLO + seguimiento ByteTrack",
             "Analizar fotografía con YOLO",
             "Crear misión desde esta detección",
+            "Iniciar misión: detectar y seguir una persona",
+            "Velocidad máxima de seguimiento",
         ]
         for label in required_labels:
             with self.subTest(label=label):

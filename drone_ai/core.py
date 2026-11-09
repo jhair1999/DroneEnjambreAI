@@ -144,6 +144,57 @@ class SimulationEngine:
             self.save_state()
             return mission
 
+    def create_physical_mission(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        priority: int = 5,
+        drone_id: str = "DJI-TELLO",
+        metadata: dict[str, Any] | None = None,
+    ) -> Mission:
+        """Registra una misión ya asignada a un dron físico supervisado."""
+        with self.lock:
+            mission_id = f"M-{self.next_mission_number:03d}"
+            self.next_mission_number += 1
+            mission = Mission(
+                mission_id=mission_id,
+                name=name.strip() or "Seguimiento físico supervisado",
+                x=float(x),
+                y=float(y),
+                priority=max(1, min(5, int(priority))),
+                source="REAL_YOLO",
+                state="ASIGNADA",
+                assigned_drone=drone_id,
+                created_at=self._now(),
+                metadata=metadata or {},
+            )
+            self.missions[mission_id] = mission
+            self._event(
+                "ASIGNACION_FISICA",
+                f"{mission_id} asignada a {drone_id}: {mission.name}.",
+                level="ALERT",
+                mission_id=mission_id,
+                drone_id=drone_id,
+            )
+            self.save_state()
+            return mission
+
+    def finish_physical_mission(self, mission_id: str, reason: str) -> None:
+        with self.lock:
+            mission = self.missions.get(mission_id)
+            if mission is None or mission.state != "ASIGNADA":
+                return
+            mission.state = "COMPLETADA"
+            mission.completed_at = self._now()
+            self._event(
+                "MISION_FISICA_FINALIZADA",
+                f"{mission_id} finalizada: {reason}.",
+                mission_id=mission_id,
+                drone_id=mission.assigned_drone,
+            )
+            self.save_state()
+
     def _candidate_scores(self, mission: Mission, excluded: set[str] | None = None) -> list[dict[str, Any]]:
         excluded = excluded or set()
         reserve = float(self.settings.get("battery_reserve", 12.0))

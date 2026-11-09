@@ -54,6 +54,9 @@ class FakeTello:
         self.commands.append("emergency")
         self.is_flying = False
 
+    def send_rc_control(self, left_right, forward_back, up_down, yaw):
+        self.commands.append(("rc", left_right, forward_back, up_down, yaw))
+
     def end(self):
         self.commands.append("end")
 
@@ -107,6 +110,16 @@ class TelloControllerTests(unittest.TestCase):
         self.controller.land()
         self.controller.disconnect()
         self.assertFalse(self.controller.snapshot.connected)
+
+    def test_follow_control_is_limited_and_requires_authorization(self):
+        self.controller.connect()
+        self.controller.takeoff(authorized=True)
+        with self.assertRaises(PermissionError):
+            self.controller.send_follow_control(10, 10, authorized=False)
+        self.controller.send_follow_control(90, -90, authorized=True)
+        self.assertIn(("rc", 0, 20, 0, -20), self.fake.commands)
+        self.controller.hover()
+        self.assertIn(("rc", 0, 0, 0, 0), self.fake.commands)
 
 
 if __name__ == "__main__":

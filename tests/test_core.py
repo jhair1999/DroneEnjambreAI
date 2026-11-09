@@ -66,6 +66,14 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(reloaded.running)
         self.assertGreaterEqual(len(reloaded.events), 2)
 
+    def test_physical_mission_is_assigned_to_tello_and_can_finish(self):
+        mission = self.engine.create_physical_mission("Seguir persona", 50, 50)
+        self.assertEqual("DJI-TELLO", mission.assigned_drone)
+        self.assertEqual("ASIGNADA", mission.state)
+        self.engine.finish_physical_mission(mission.mission_id, "objetivo perdido")
+        self.assertEqual("COMPLETADA", mission.state)
+        self.assertTrue(any(e["type"] == "ASIGNACION_FISICA" for e in self.engine.events))
+
 
 if __name__ == "__main__":
     unittest.main()

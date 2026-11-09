@@ -195,6 +195,34 @@ class TelloController:
             self._snapshot.last_command = f"Giro {'horario' if clockwise else 'antihorario'} {degrees}°"
             return self.refresh_telemetry()
 
+    def send_follow_control(
+        self,
+        forward_back: int,
+        yaw: int,
+        authorized: bool = False,
+    ) -> TelloSnapshot:
+        """Envía una orden RC limitada para seguimiento supervisado."""
+        with self._lock:
+            tello = self._require_connected()
+            if not authorized:
+                raise PermissionError("El seguimiento físico requiere confirmación explícita.")
+            if not self._snapshot.flying:
+                raise RuntimeError("El Tello debe estar volando para activar el seguimiento.")
+            forward_back = max(-20, min(20, int(forward_back)))
+            yaw = max(-20, min(20, int(yaw)))
+            tello.send_rc_control(0, forward_back, 0, yaw)
+            self._snapshot.last_command = f"Seguimiento RC: avance {forward_back}, giro {yaw}"
+            return self.snapshot
+
+    def hover(self) -> TelloSnapshot:
+        """Detiene todas las velocidades sin cortar motores."""
+        with self._lock:
+            tello = self._require_connected()
+            if self._snapshot.flying:
+                tello.send_rc_control(0, 0, 0, 0)
+                self._snapshot.last_command = "Mantener posición"
+            return self.snapshot
+
     def emergency(self, authorized: bool = False) -> TelloSnapshot:
         with self._lock:
             tello = self._require_connected()

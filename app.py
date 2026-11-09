@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from drone_ai.core import SimulationEngine
+from drone_ai.follow import compute_follow_command, select_person_target
 from drone_ai.tello import (
     MIN_TAKEOFF_BATTERY,
     TelloController,
@@ -545,7 +546,39 @@ with tab_tello:
     if status.streaming:
         live_confidence = st.slider("Confianza YOLO en vivo", 0.10, 0.90, 0.35, 0.05)
         analyze_live = st.checkbox("Activar YOLO + seguimiento ByteTrack", value=True)
+        follow_safety = st.checkbox(
+            "Autorizo seguimiento físico supervisado, con protectores y área despejada",
+            key="tello_follow_safety",
+            disabled=not (status.connected and status.flying and armed and analyze_live),
+        )
+        follow_speed = st.slider(
+            "Velocidad máxima de seguimiento",
+            8,
+            20,
+            12,
+            disabled=not follow_safety,
+            help="Limita el avance y el giro automático. Para la primera prueba usa 8.",
+        )
+        follow_enabled = st.checkbox(
+            "🎯 Iniciar misión: detectar y seguir una persona",
+            key="tello_follow_enabled",
+            disabled=not follow_safety,
+        )
         auto_refresh = st.checkbox("Actualizar video continuamente", value=True)
+
+        was_following = st.session_state.get("tello_follow_active", False)
+        if was_following and not follow_enabled:
+            try:
+                tello_controller.hover()
+                physical_mission_id = st.session_state.pop("tello_follow_mission_id", None)
+                if physical_mission_id:
+                    engine.finish_physical_mission(physical_mission_id, "detenida por el operador")
+            except Exception as exc:
+                st.warning(f"No se pudo confirmar la detención: {exc}")
+            st.session_state.pop("tello_target_id", None)
+            st.session_state["tello_target_missed"] = 0
+        st.session_state["tello_follow_active"] = follow_enabled
+
         try:
             live_frame = tello_controller.get_frame()
             if analyze_live:
@@ -560,9 +593,60 @@ with tab_tello:
                     "total": live_result.total_detections,
                     "people": live_result.counts.get("person", 0),
                 }
+                if follow_enabled:
+                    preferred_id = st.session_state.get("tello_target_id")
+                    target = select_person_target(live_result.person_targets, preferred_id)
+                    command = compute_follow_command(
+                        target,
+                        frame_width=live_frame.shape[1],
+                        frame_height=live_frame.shape[0],
+                        max_speed=follow_speed,
+                    )
+                    if target is not None:
+                        st.session_state["tello_target_id"] = target.track_id
+                        st.session_state["tello_target_missed"] = 0
+                        if not st.session_state.get("tello_follow_mission_id"):
+                            physical_mission = engine.create_physical_mission(
+                                "Seguimiento supervisado de persona detectada",
+                                50,
+                                50,
+                                metadata={
+                                    "camera": "DJI_TELLO_LIVE",
+                                    "track_id": target.track_id,
+                                    "control": "RC_SUPERVISADO",
+                                },
+                            )
+                            st.session_state["tello_follow_mission_id"] = physical_mission.mission_id
+                            engine.register_real_detection(1, 1, "Cámara DJI Tello en vivo")
+                        tello_controller.send_follow_control(
+                            command.forward_back,
+                            command.yaw,
+                            authorized=follow_safety and armed,
+                        )
+                        st.success(
+                            f"MISIÓN ACTIVA · Persona ID {target.track_id or 'sin ID'} · {command.reason} · "
+                            f"avance {command.forward_back}, giro {command.yaw}."
+                        )
+                    else:
+                        tello_controller.hover()
+                        missed = st.session_state.get("tello_target_missed", 0) + 1
+                        st.session_state["tello_target_missed"] = missed
+                        st.warning("Objetivo no visible: movimiento detenido y posición mantenida.")
+                        if missed >= 12:
+                            physical_mission_id = st.session_state.pop("tello_follow_mission_id", None)
+                            if physical_mission_id:
+                                engine.finish_physical_mission(
+                                    physical_mission_id, "persona fuera de cámara durante 3 segundos"
+                                )
+                            st.session_state.pop("tello_target_id", None)
             else:
                 st.image(live_frame, channels="BGR", width="stretch")
         except Exception as exc:
+            if follow_enabled:
+                try:
+                    tello_controller.hover()
+                except Exception:
+                    pass
             st.warning(f"Esperando video del Tello: {exc}")
 
         detection = st.session_state.get("last_tello_detection", {"total": 0, "people": 0})

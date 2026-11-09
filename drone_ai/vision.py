@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from typing import Callable
 
+from drone_ai.follow import PersonTarget
+
 
 @dataclass
 class VisionResult:
@@ -23,6 +25,7 @@ class LiveVisionResult:
     counts: dict[str, int]
     total_detections: int
     track_ids: list[int]
+    person_targets: list[PersonTarget]
 
 
 class LiveVisionProcessor:
@@ -43,17 +46,38 @@ class LiveVisionProcessor:
         )[0]
         counts: Counter[str] = Counter()
         track_ids: list[int] = []
+        person_targets: list[PersonTarget] = []
         if prediction.boxes is not None:
             classes = prediction.boxes.cls.int().cpu().tolist()
+            confidences = prediction.boxes.conf.cpu().tolist()
+            coordinates = prediction.boxes.xyxy.int().cpu().tolist()
+            raw_ids = (
+                prediction.boxes.id.int().cpu().tolist()
+                if prediction.boxes.id is not None
+                else [None] * len(classes)
+            )
             for class_id in classes:
                 counts[str(prediction.names[int(class_id)])] += 1
-            if prediction.boxes.id is not None:
-                track_ids = [int(value) for value in prediction.boxes.id.int().cpu().tolist()]
+            for class_id, confidence, box, track_id in zip(classes, confidences, coordinates, raw_ids):
+                if track_id is not None:
+                    track_ids.append(int(track_id))
+                if str(prediction.names[int(class_id)]) == "person":
+                    person_targets.append(
+                        PersonTarget(
+                            track_id=int(track_id) if track_id is not None else None,
+                            confidence=float(confidence),
+                            x1=int(box[0]),
+                            y1=int(box[1]),
+                            x2=int(box[2]),
+                            y2=int(box[3]),
+                        )
+                    )
         return LiveVisionResult(
             annotated_frame=prediction.plot(),
             counts=dict(sorted(counts.items())),
             total_detections=sum(counts.values()),
             track_ids=sorted(set(track_ids)),
+            person_targets=person_targets,
         )
 
 

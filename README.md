@@ -29,6 +29,10 @@ El Tello no ejecuta Python o YOLO dentro de su pequeño controlador. La aplicaci
 7. Comprueba telemetría y video. Para volar, marca la confirmación de seguridad y usa **DESPEGAR**.
 8. Usa **ATERRIZAR** para terminar. La parada de emergencia corta motores y solo debe utilizarse ante peligro inmediato.
 
+### Misión física de seguimiento
+
+Con el Tello ya volando y la cámara activa, habilita YOLO/ByteTrack, confirma el seguimiento supervisado y pulsa **Iniciar misión: detectar y seguir una persona**. El sistema conserva el ID de la persona, gira para centrarla y avanza lentamente cuando está distante. No cambia la altura ni retrocede automáticamente. Si la persona sale de la imagen, envía velocidad cero inmediatamente; después de tres segundos registra la misión como finalizada. El operador debe mantener el botón **Aterrizar** disponible en todo momento.
+
 La URL pública de Streamlit sirve para la simulación, pero no puede acceder al Tello conectado a la red local. El control físico debe abrirse localmente con `INICIAR_TELLO.bat`.
 
 ## Prototipo con celular (sin comprar el dron)
