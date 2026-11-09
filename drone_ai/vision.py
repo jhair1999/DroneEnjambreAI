@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
@@ -14,6 +15,46 @@ class VisionResult:
     frames_with_people: int
     person_detections: int
     max_people_in_frame: int
+
+
+@dataclass
+class LiveVisionResult:
+    annotated_frame: object
+    counts: dict[str, int]
+    total_detections: int
+    track_ids: list[int]
+
+
+class LiveVisionProcessor:
+    """Detección y seguimiento persistente para la cámara en vivo del Tello."""
+
+    def __init__(self, weights: str = "yolo11n.pt"):
+        from ultralytics import YOLO
+
+        self.model = YOLO(weights)
+
+    def process(self, frame, confidence: float = 0.35) -> LiveVisionResult:
+        prediction = self.model.track(
+            frame,
+            persist=True,
+            tracker="bytetrack.yaml",
+            conf=float(confidence),
+            verbose=False,
+        )[0]
+        counts: Counter[str] = Counter()
+        track_ids: list[int] = []
+        if prediction.boxes is not None:
+            classes = prediction.boxes.cls.int().cpu().tolist()
+            for class_id in classes:
+                counts[str(prediction.names[int(class_id)])] += 1
+            if prediction.boxes.id is not None:
+                track_ids = [int(value) for value in prediction.boxes.id.int().cpu().tolist()]
+        return LiveVisionResult(
+            annotated_frame=prediction.plot(),
+            counts=dict(sorted(counts.items())),
+            total_detections=sum(counts.values()),
+            track_ids=sorted(set(track_ids)),
+        )
 
 
 def dependency_status() -> tuple[bool, str]:

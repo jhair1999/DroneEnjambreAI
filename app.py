@@ -10,7 +10,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from drone_ai.core import SimulationEngine
-from drone_ai.vision import dependency_status, process_video
+from drone_ai.tello import (
+    MIN_TAKEOFF_BATTERY,
+    TelloController,
+    dependency_status as tello_dependency_status,
+)
+from drone_ai.vision import LiveVisionProcessor, dependency_status, process_video
 
 
 ROOT = Path(__file__).resolve().parent
@@ -47,6 +52,19 @@ def get_engine() -> SimulationEngine:
 
 
 engine = get_engine()
+
+
+@st.cache_resource
+def get_tello_controller() -> TelloController:
+    return TelloController()
+
+
+@st.cache_resource
+def get_live_vision_processor() -> LiveVisionProcessor:
+    return LiveVisionProcessor(str(ROOT / "yolo11n.pt"))
+
+
+tello_controller = get_tello_controller()
 
 
 def drone_rows():
@@ -174,8 +192,15 @@ with st.sidebar:
         engine.fail_drone(failed_target); st.rerun()
 
 
-tab_operation, tab_vision, tab_history, tab_help = st.tabs(
-    ["📡 Operación", "👁️ Visión IA", "📜 Historial", "🎥 Guion de demostración"]
+tab_operation, tab_vision, tab_mobile, tab_tello, tab_history, tab_help = st.tabs(
+    [
+        "📡 Operación",
+        "👁️ Visión IA",
+        "📱 Prototipo celular",
+        "🚁 DJI Tello físico",
+        "📜 Historial",
+        "🎥 Guion de demostración",
+    ]
 )
 
 
@@ -256,6 +281,304 @@ with tab_vision:
             st.exception(exc)
     elif uploaded and not available:
         st.warning("Ejecuta INSTALAR.bat para habilitar OpenCV y YOLO.")
+
+
+with tab_mobile:
+    st.markdown('<span class="badge-sim">PROTOTIPO CON CÁMARA DE CELULAR</span>', unsafe_allow_html=True)
+    st.write(
+        "Este modo reemplaza temporalmente la cámara del dron por la cámara del teléfono. "
+        "La imagen y la detección YOLO son reales; batería, altura y movimiento son simulados."
+    )
+    st.info(
+        "Abre la URL pública de DroneEnjambreAI desde el celular, entra a esta pestaña y permite el acceso "
+        "a la cámara. No necesitas tener un DJI Tello para esta demostración."
+    )
+
+    mobile_left, mobile_right = st.columns([1, 1])
+    with mobile_left:
+        st.subheader("Telemetría simulada del prototipo")
+        mobile_battery = st.slider("Batería simulada (%)", 0, 100, 82, key="mobile_battery")
+        mobile_altitude = st.slider("Altura simulada (m)", 0, 30, 8, key="mobile_altitude")
+        mobile_x = st.slider("Coordenada X simulada", 0, 100, 50, key="mobile_x")
+        mobile_y = st.slider("Coordenada Y simulada", 0, 100, 50, key="mobile_y")
+        mc1, mc2 = st.columns(2)
+        mc1.metric("Batería", f"{mobile_battery}%", help="Dato simulado porque el celular no entrega batería del dron.")
+        mc2.metric("Altura", f"{mobile_altitude} m", help="Dato simulado para representar el vuelo del prototipo.")
+        if mobile_battery < MIN_TAKEOFF_BATTERY:
+            st.error("Misión bloqueada: batería simulada inferior al 30 %.")
+    with mobile_right:
+        st.subheader("Captura real desde la cámara")
+        mobile_photo = st.camera_input(
+            "Tomar fotografía para reconocimiento",
+            help="En el teléfono abrirá la cámara. La fotografía se procesa con YOLO.",
+        )
+        mobile_confidence = st.slider(
+            "Confianza mínima", 0.10, 0.90, 0.35, 0.05, key="mobile_confidence"
+        )
+
+    if mobile_photo is not None:
+        import cv2
+        import numpy as np
+
+        photo_bytes = mobile_photo.getvalue()
+        photo_hash = hashlib.sha1(photo_bytes).hexdigest()
+        if st.button("🔎 Analizar fotografía con YOLO", type="primary", width="stretch"):
+            decoded = cv2.imdecode(np.frombuffer(photo_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if decoded is None:
+                st.error("No se pudo leer la fotografía del celular.")
+            else:
+                result = get_live_vision_processor().process(decoded, mobile_confidence)
+                st.session_state["mobile_detection"] = {
+                    "hash": photo_hash,
+                    "frame": result.annotated_frame,
+                    "counts": result.counts,
+                    "total": result.total_detections,
+                    "people": result.counts.get("person", 0),
+                }
+
+    mobile_detection = st.session_state.get("mobile_detection")
+    if mobile_detection and mobile_photo is not None and mobile_detection["hash"] == hashlib.sha1(mobile_photo.getvalue()).hexdigest():
+        st.image(mobile_detection["frame"], channels="BGR", width="stretch")
+        detected_text = ", ".join(
+            f"{name}: {count}" for name, count in mobile_detection["counts"].items()
+        )
+        st.success(
+            f"Detección real completada: {mobile_detection['total']} objetos. "
+            f"Clases reconocidas: {detected_text or 'ninguna'}."
+        )
+        mission_disabled = mobile_detection["total"] <= 0 or mobile_battery < MIN_TAKEOFF_BATTERY
+        if st.button(
+            "📍 Crear misión desde esta detección",
+            type="primary",
+            disabled=mission_disabled,
+            width="stretch",
+        ):
+            engine.register_real_detection(
+                mobile_detection["people"], 1, "Fotografía real desde celular"
+            )
+            mission = engine.create_mission(
+                "Inspeccionar objetos detectados por cámara celular",
+                mobile_x,
+                mobile_y,
+                5,
+                "REAL_YOLO",
+                {
+                    "camera": "CELULAR",
+                    "objects": mobile_detection["counts"],
+                    "simulated_altitude_m": mobile_altitude,
+                    "simulated_battery": mobile_battery,
+                },
+            )
+            st.success(
+                f"Misión {mission.mission_id} creada y enviada al coordinador. "
+                "La detección es real; posición, batería y altura son simuladas."
+            )
+
+    with st.expander("¿Qué representa cada opción del modo celular?"):
+        st.markdown(
+            """
+            - **Batería simulada:** imita el porcentaje que reportaría el Tello; bajo 30 % bloquea la misión.
+            - **Altura simulada:** representa la altura de vuelo porque el teléfono permanece en tierra.
+            - **Coordenadas X/Y:** lugar del mapa donde se generará la alerta.
+            - **Tomar fotografía:** abre la cámara real del celular.
+            - **Confianza mínima:** elimina detecciones poco seguras; 0.35 es un valor equilibrado.
+            - **Analizar con YOLO:** reconoce personas, vehículos y otros objetos reales en la fotografía.
+            - **Crear misión:** registra la alerta y deja que el coordinador seleccione un dron virtual.
+            """
+        )
+
+
+with tab_tello:
+    st.markdown('<span class="badge-real">CONTROL FÍSICO DJI/RYZE TELLO</span>', unsafe_allow_html=True)
+    st.warning(
+        "Este módulo solo controla el dron desde la aplicación LOCAL abierta con INICIAR_TELLO.bat. "
+        "No funciona desde la web pública porque el Tello crea su propia red Wi-Fi."
+    )
+    tello_available, tello_status_text = tello_dependency_status()
+    (st.success if tello_available else st.error)(tello_status_text)
+
+    if "tello_notice" in st.session_state:
+        notice_type, notice_text = st.session_state.pop("tello_notice")
+        getattr(st, notice_type)(notice_text)
+
+    status = tello_controller.snapshot
+    connect_col, refresh_col, camera_col, disconnect_col = st.columns(4)
+    if connect_col.button(
+        "🔌 Conectar Tello", width="stretch", disabled=not tello_available or status.connected
+    ):
+        try:
+            tello_controller.connect()
+            st.session_state["tello_notice"] = ("success", "Tello conectado. No se ha ordenado ningún despegue.")
+        except Exception as exc:
+            st.session_state["tello_notice"] = ("error", str(exc))
+        st.rerun()
+    if refresh_col.button("↻ Telemetría", width="stretch", disabled=not status.connected):
+        try:
+            tello_controller.refresh_telemetry()
+            st.session_state["tello_notice"] = ("success", "Telemetría actualizada.")
+        except Exception as exc:
+            st.session_state["tello_notice"] = ("error", str(exc))
+        st.rerun()
+    if camera_col.button(
+        "📷 Iniciar cámara" if not status.streaming else "⏹ Detener cámara",
+        width="stretch",
+        disabled=not status.connected,
+    ):
+        try:
+            if status.streaming:
+                tello_controller.stop_stream()
+            else:
+                tello_controller.start_stream()
+            st.session_state["tello_notice"] = ("success", "Estado de cámara actualizado.")
+        except Exception as exc:
+            st.session_state["tello_notice"] = ("error", str(exc))
+        st.rerun()
+    if disconnect_col.button("Desconectar", width="stretch", disabled=not status.connected or status.flying):
+        try:
+            tello_controller.disconnect()
+            st.session_state["tello_notice"] = ("success", "Tello desconectado correctamente.")
+        except Exception as exc:
+            st.session_state["tello_notice"] = ("error", str(exc))
+        st.rerun()
+
+    status = tello_controller.snapshot
+    tm1, tm2, tm3, tm4, tm5 = st.columns(5)
+    tm1.metric("Enlace", "CONECTADO" if status.connected else "SIN CONEXIÓN")
+    tm2.metric("Batería", f"{status.battery}%" if status.battery is not None else "—")
+    tm3.metric("Vuelo", "EN EL AIRE" if status.flying else "EN TIERRA")
+    tm4.metric("Altura", f"{status.height_cm} cm" if status.height_cm is not None else "—")
+    tm5.metric("Temperatura", f"{status.temperature_c:.0f} °C" if status.temperature_c is not None else "—")
+    st.caption(f"Último comando: {status.last_command}")
+    if status.last_error:
+        st.error(status.last_error)
+
+    st.subheader("Control de vuelo protegido")
+    st.write(
+        "Antes de armar: instala protectores de hélices, despeja al menos 3 metros, coloca el Tello en "
+        "una superficie plana y mantén disponible el botón Aterrizar."
+    )
+    armed = st.checkbox(
+        "Confirmo que el área está despejada y deseo habilitar órdenes físicas de vuelo",
+        key="tello_armed",
+    )
+    battery_ok = status.battery is not None and status.battery >= MIN_TAKEOFF_BATTERY
+    takeoff_col, land_col = st.columns(2)
+    if takeoff_col.button(
+        "🚀 DESPEGAR",
+        type="primary",
+        width="stretch",
+        disabled=not (status.connected and armed and battery_ok and not status.flying),
+    ):
+        try:
+            tello_controller.takeoff(authorized=armed)
+            st.session_state["tello_notice"] = ("success", "Despegue confirmado por el Tello.")
+        except Exception as exc:
+            st.session_state["tello_notice"] = ("error", str(exc))
+        st.rerun()
+    if land_col.button(
+        "🛬 ATERRIZAR", width="stretch", disabled=not (status.connected and status.flying)
+    ):
+        try:
+            tello_controller.land()
+            st.session_state["tello_notice"] = ("success", "Aterrizaje confirmado.")
+        except Exception as exc:
+            st.session_state["tello_notice"] = ("error", str(exc))
+        st.rerun()
+    if status.connected and not battery_ok:
+        st.error(f"Despegue bloqueado: se requiere al menos {MIN_TAKEOFF_BATTERY}% de batería.")
+
+    distance = st.slider("Distancia por orden (cm)", 20, 100, 30, 10, disabled=not status.connected)
+    turn_degrees = st.slider("Giro por orden (grados)", 15, 180, 45, 15, disabled=not status.connected)
+    move_enabled = status.connected and status.flying and armed
+    move_columns = st.columns(4)
+    movement_actions = [
+        ("⬆ Adelante", "forward"),
+        ("⬇ Atrás", "back"),
+        ("⬅ Izquierda", "left"),
+        ("➡ Derecha", "right"),
+    ]
+    for column, (label, direction) in zip(move_columns, movement_actions):
+        if column.button(label, width="stretch", disabled=not move_enabled, key=f"move_{direction}"):
+            try:
+                tello_controller.move(direction, distance, authorized=armed)
+                st.session_state["tello_notice"] = ("success", f"Orden ejecutada: {label} {distance} cm.")
+            except Exception as exc:
+                st.session_state["tello_notice"] = ("error", str(exc))
+            st.rerun()
+    vertical_columns = st.columns(4)
+    extra_actions = [
+        ("🔼 Subir", "up", None),
+        ("🔽 Bajar", "down", None),
+        ("↻ Giro horario", None, True),
+        ("↺ Giro antihorario", None, False),
+    ]
+    for column, (label, direction, clockwise) in zip(vertical_columns, extra_actions):
+        if column.button(label, width="stretch", disabled=not move_enabled, key=f"physical_{label}"):
+            try:
+                if direction:
+                    tello_controller.move(direction, distance, authorized=armed)
+                else:
+                    tello_controller.rotate(bool(clockwise), turn_degrees, authorized=armed)
+                st.session_state["tello_notice"] = ("success", f"Orden ejecutada: {label}.")
+            except Exception as exc:
+                st.session_state["tello_notice"] = ("error", str(exc))
+            st.rerun()
+
+    with st.expander("⚠ Parada de emergencia (el dron caerá)"):
+        emergency_confirm = st.checkbox(
+            "Confirmo que existe peligro inmediato y debo cortar los motores",
+            key="tello_emergency_confirm",
+        )
+        if st.button(
+            "CORTAR MOTORES",
+            type="primary",
+            disabled=not (status.connected and status.flying and emergency_confirm),
+        ):
+            try:
+                tello_controller.emergency(authorized=emergency_confirm)
+                st.session_state["tello_notice"] = ("error", "Se ejecutó la parada de emergencia.")
+            except Exception as exc:
+                st.session_state["tello_notice"] = ("error", str(exc))
+            st.rerun()
+
+    st.subheader("Cámara en vivo y reconocimiento")
+    if status.streaming:
+        live_confidence = st.slider("Confianza YOLO en vivo", 0.10, 0.90, 0.35, 0.05)
+        analyze_live = st.checkbox("Activar YOLO + seguimiento ByteTrack", value=True)
+        auto_refresh = st.checkbox("Actualizar video continuamente", value=True)
+        try:
+            live_frame = tello_controller.get_frame()
+            if analyze_live:
+                live_result = get_live_vision_processor().process(live_frame, live_confidence)
+                st.image(live_result.annotated_frame, channels="BGR", width="stretch")
+                classes_text = ", ".join(f"{name}: {count}" for name, count in live_result.counts.items())
+                st.info(
+                    f"Objetos visibles: {live_result.total_detections}. "
+                    f"Clases: {classes_text or 'ninguna'}. IDs seguidos: {live_result.track_ids or 'ninguno'}."
+                )
+                st.session_state["last_tello_detection"] = {
+                    "total": live_result.total_detections,
+                    "people": live_result.counts.get("person", 0),
+                }
+            else:
+                st.image(live_frame, channels="BGR", width="stretch")
+        except Exception as exc:
+            st.warning(f"Esperando video del Tello: {exc}")
+
+        detection = st.session_state.get("last_tello_detection", {"total": 0, "people": 0})
+        if st.button("Registrar detección real en el coordinador", disabled=detection["total"] <= 0):
+            engine.register_real_detection(detection["people"], 1, "Cámara DJI Tello en vivo")
+            if detection["people"] > 0:
+                engine.create_mission(
+                    "Verificar persona detectada por DJI Tello", 50, 50, 5, "REAL_YOLO",
+                    {"physical_drone": "DJI Tello", "objects": detection["total"]},
+                )
+            st.success("Detección incorporada al historial y al coordinador.")
+        if auto_refresh:
+            time.sleep(0.25)
+            st.rerun()
+    else:
+        st.info("Conecta el Tello y presiona Iniciar cámara para reconocer personas y otros objetos en vivo.")
 
 
 with tab_history:
